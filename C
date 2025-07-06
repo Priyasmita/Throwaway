@@ -1,0 +1,265 @@
+Install-Package TIBCO.EMS
+Install-Package Confluent.Kafka
+Install-Package Autofac
+Install-Package Newtonsoft.Json
+Install-Package log4net
+Install-Package NUnit
+Install-Package Topshelf
+
+<configuration>
+  <appSettings>
+    <add key="EmsConfigPath" value="Config\ems.json" />
+    <add key="KafkaConfigPath" value="Config\kafka.json" />
+  </appSettings>
+</configuration>
+
+{
+  "ServerUrl": "tcp://localhost:7222",
+  "QueueName": "CustomerQueue",
+  "ErrorQueueName": "CustomerQueue.Error",
+  "Username": "admin",
+  "Password": "admin"
+}
+
+{
+  "BootstrapServers": "localhost:9092",
+  "TopicName": "customer-topic"
+}
+
+public class CustomerMessage
+{
+    public string Name { get; set; }
+    public string Address { get; set; }
+}
+
+public class EmsSettings
+{
+    public string ServerUrl { get; set; }
+    public string QueueName { get; set; }
+    public string ErrorQueueName { get; set; }
+    public string Username { get; set; }
+    public string Password { get; set; }
+}
+
+public class KafkaSettings
+{
+    public string BootstrapServers { get; set; }
+    public string TopicName { get; set; }
+}
+
+public interface IMessageConsumer
+{
+    void Start();
+    void Stop();
+}
+
+public class TibcoMessageConsumer : IMessageConsumer
+{
+    private readonly IMessageProcessor _processor;
+    private readonly EmsSettings _settings;
+    private TIBCO.EMS.Session _session;
+    private TIBCO.EMS.MessageConsumer _consumer;
+    private TIBCO.EMS.Connection _connection;
+    private bool _shouldStop;
+
+    public TibcoMessageConsumer(IMessageProcessor processor, EmsSettings settings)
+    {
+        _processor = processor;
+        _settings = settings;
+    }
+
+    public void Start()
+    {
+        var factory = new TIBCO.EMS.ConnectionFactory(_settings.ServerUrl);
+        _connection = factory.CreateConnection(_settings.Username, _settings.Password);
+        _session = _connection.CreateSession(false, SessionMode.CLIENT_ACKNOWLEDGE);
+        var destination = _session.CreateQueue(_settings.QueueName);
+        _consumer = _session.CreateConsumer(destination);
+        _consumer.MessageHandler += OnMessage;
+        _connection.Start();
+    }
+
+    private void OnMessage(object sender, MessageEventArgs args)
+    {
+        try
+        {
+            var textMessage = args.Message as TextMessage;
+            _processor.ProcessMessage(textMessage);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to process message: " + ex.Message, ex);
+        }
+    }
+
+    public void Stop()
+    {
+        _shouldStop = true;
+        _connection?.Close();
+    }
+}
+
+public interface IMessageProcessor
+{
+    void ProcessMessage(TextMessage message);
+}
+
+public class MessageProcessor : IMessageProcessor
+{
+    private readonly IKafkaProducer _producer;
+    private readonly EmsSettings _emsSettings;
+
+    public MessageProcessor(IKafkaProducer producer, EmsSettings emsSettings)
+    {
+        _producer = producer;
+        _emsSettings = emsSettings;
+    }
+
+    public void ProcessMessage(TextMessage message)
+    {
+        var json = message.Text;
+        var customer = JsonConvert.DeserializeObject<CustomerMessage>(json);
+
+        if (string.IsNullOrWhiteSpace(customer.Name))
+        {
+            SendToErrorQueue(message);
+            message.Acknowledge();
+            return;
+        }
+
+        for (int i = 0; i < 3; i++)
+        {
+            try
+            {
+                _producer.Produce(JsonConvert.SerializeObject(customer));
+                message.Acknowledge();
+                return;
+            }
+            catch (KafkaRetriableException ex)
+            {
+                Logger.Warn($"Retry {i + 1}/3 - Kafka temporarily unavailable.", ex);
+                Thread.Sleep(1000);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Non-retriable Kafka error.", ex);
+                throw;
+            }
+        }
+
+        throw new Exception("Exceeded Kafka retry attempts.");
+    }
+
+    private void SendToErrorQueue(TextMessage message)
+    {
+        var factory = new TIBCO.EMS.ConnectionFactory(_emsSettings.ServerUrl);
+        using (var connection = factory.CreateConnection(_emsSettings.Username, _emsSettings.Password))
+        using (var session = connection.CreateSession(false, SessionMode.AUTO_ACKNOWLEDGE))
+        {
+            connection.Start();
+            var errorQueue = session.CreateQueue(_emsSettings.ErrorQueueName);
+            var producer = session.CreateProducer(errorQueue);
+            producer.Send(message);
+        }
+    }
+}
+
+public interface IKafkaProducer
+{
+    void Produce(string jsonMessage);
+}
+
+public class KafkaProducer : IKafkaProducer
+{
+    private readonly KafkaSettings _settings;
+    private readonly IProducer<Null, string> _producer;
+
+    public KafkaProducer(KafkaSettings settings)
+    {
+        _settings = settings;
+        var config = new ProducerConfig { BootstrapServers = _settings.BootstrapServers };
+        _producer = new ProducerBuilder<Null, string>(config).Build();
+    }
+
+    public void Produce(string jsonMessage)
+    {
+        _producer.Produce(_settings.TopicName, new Message<Null, string> { Value = jsonMessage });
+    }
+}
+
+public static class Logger
+{
+    private static readonly ILog _log = LogManager.GetLogger(typeof(Logger));
+
+    static Logger()
+    {
+        log4net.Config.XmlConfigurator.Configure();
+    }
+
+    public static void Error(string message, Exception ex) => _log.Error(message, ex);
+    public static void Warn(string message, Exception ex) => _log.Warn(message, ex);
+    public static void Info(string message) => _log.Info(message);
+}
+
+static class Program
+{
+    static void Main()
+    {
+        var builder = new ContainerBuilder();
+
+        var emsSettings = LoadSettings<EmsSettings>("EmsConfigPath");
+        var kafkaSettings = LoadSettings<KafkaSettings>("KafkaConfigPath");
+
+        builder.RegisterInstance(emsSettings).As<EmsSettings>();
+        builder.RegisterInstance(kafkaSettings).As<KafkaSettings>();
+        builder.RegisterType<KafkaProducer>().As<IKafkaProducer>();
+        builder.RegisterType<MessageProcessor>().As<IMessageProcessor>();
+        builder.RegisterType<TibcoMessageConsumer>().As<IMessageConsumer>();
+
+        var container = builder.Build();
+        var consumer = container.Resolve<IMessageConsumer>();
+
+        var service = new WindowsService(consumer);
+        ServiceBase.Run(service);
+    }
+
+    private static T LoadSettings<T>(string key)
+    {
+        var path = ConfigurationManager.AppSettings[key];
+        var json = File.ReadAllText(path);
+        return JsonConvert.DeserializeObject<T>(json);
+    }
+}
+
+public class WindowsService : ServiceBase
+{
+    private readonly IMessageConsumer _consumer;
+
+    public WindowsService(IMessageConsumer consumer)
+    {
+        ServiceName = "CustomerMessageProcessorService";
+        _consumer = consumer;
+    }
+
+    protected override void OnStart(string[] args)
+    {
+        try
+        {
+            _consumer.Start();
+            Logger.Info("Service started.");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Error starting service", ex);
+            Stop();
+        }
+    }
+
+    protected override void OnStop()
+    {
+        _consumer.Stop();
+        Logger.Info("Service stopped.");
+    }
+}
+
+
