@@ -1,0 +1,39 @@
+C
+------------------------------
+
+CustomerMessageProcessor/
+│
+├── Services/
+│   ├── IMessageConsumer.cs
+│   ├── TibcoMessageConsumer.cs
+│   ├── IKafkaProducer.cs
+│   ├── KafkaProducer.cs
+│   ├── IMessageProcessor.cs
+│   └── MessageProcessor.cs
+│
+├── Models/
+│   ├── CustomerMessage.cs
+│   └── AppSettings.cs
+│
+├── Config/
+│   ├── ems.json
+│   └── kafka.json
+│
+├── Logging/
+│   └── Logger.cs
+│
+├── ServiceHost/
+│   └── WindowsService.cs
+│
+├── App.config
+├── Program.cs
+└── CustomerMessageProcessor.sln
+
+---Claus
+
+TibcoKafkaWindowsService
+├── MessageProcessor (Orchestrates the flow)
+├── TibcoEmsService (TIBCO EMS operations)
+├── KafkaService (Kafka operations)
+├── MessageTransformer (Text to JSON conversion)
+└── ConfigurationManager (Configuration loading)
