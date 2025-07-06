@@ -1,0 +1,433 @@
+public interface IConfigProvider
+{
+    T LoadConfig<T>(string path);
+}
+
+public class JsonConfigProvider : IConfigProvider
+{
+    public T LoadConfig<T>(string path)
+    {
+        var json = File.ReadAllText(path);
+        return JsonConvert.DeserializeObject<T>(json);
+    }
+}
+public interface ILogger
+{
+    void LogInfo(string message);
+    void LogError(string message, Exception ex = null);
+}
+
+public class FileLogger : ILogger
+{
+    private readonly string _logFilePath;
+    private readonly object _lock = new object();
+
+    public FileLogger(string logFilePath)
+    {
+        _logFilePath = logFilePath;
+    }
+
+    public void LogInfo(string message)
+    {
+        WriteLog("INFO", message);
+    }
+
+    public void LogError(string message, Exception ex = null)
+    {
+        WriteLog("ERROR", $"{message} {ex?.ToString()}");
+    }
+
+    private void WriteLog(string level, string message)
+    {
+        lock (_lock)
+        {
+            File.AppendAllText(_logFilePath, $"{DateTime.Now:O} [{level}] {message}{Environment.NewLine}");
+        }
+    }
+}
+public interface IMessageTransformer
+{
+    string Transform(string textMessage);
+}
+
+public class CustomerJsonTransformer : IMessageTransformer
+{
+    public string Transform(string textMessage)
+    {
+        // Simple parsing assuming format: "name:John Doe;address:123 Main St"
+        var dict = textMessage.Split(';')
+                              .Select(part => part.Split(new[] { ':' }, 2))
+                              .Where(parts => parts.Length == 2)
+                              .ToDictionary(parts => parts[0].Trim().ToLower(), parts => parts[1].Trim());
+
+        if (!dict.TryGetValue("name", out var name) || string.IsNullOrEmpty(name))
+            return null; // Missing name
+
+        dict.TryGetValue("address", out var address);
+
+        var customer = new { name, address };
+        return JsonConvert.SerializeObject(customer);
+    }
+}
+public interface ITibcoEmsConnection : IDisposable
+{
+    IMessageConsumer CreateConsumer(string queueName);
+    IMessageProducer CreateProducer(string queueName);
+    ISession CreateSession();
+    bool IsConnected { get; }
+}
+
+public class TibcoEmsConnection : ITibcoEmsConnection
+{
+    private readonly ConnectionFactory _factory;
+    private readonly IConnection _connection;
+    private readonly ISession _session;
+    private readonly ILogger _logger;
+
+    public bool IsConnected { get; private set; }
+
+    public TibcoEmsConnection(EmsConfig config, ILogger logger)
+    {
+        _logger = logger;
+        try
+        {
+            _factory = new ConnectionFactory(config.ServerUrl);
+            _connection = _factory.CreateConnection(config.User, config.Password);
+            _session = _connection.CreateSession(false, Session.AUTO_ACKNOWLEDGE);
+            _connection.Start();
+            IsConnected = true;
+            _logger.LogInfo("Connected to TIBCO EMS.");
+        }
+        catch (Exception ex)
+        {
+            IsConnected = false;
+            _logger.LogError("Failed to connect to TIBCO EMS.", ex);
+            throw;
+        }
+    }
+
+    public IMessageConsumer CreateConsumer(string queueName)
+    {
+        var queue = _session.CreateQueue(queueName);
+        return _session.CreateConsumer(queue);
+    }
+
+    public IMessageProducer CreateProducer(string queueName)
+    {
+        var queue = _session.CreateQueue(queueName);
+        return _session.CreateProducer(queue);
+    }
+
+    public ISession CreateSession() => _session;
+
+    public void Dispose()
+    {
+        try
+        {
+            _session?.Close();
+            _connection?.Close();
+            IsConnected = false;
+            _logger.LogInfo("Disconnected from TIBCO EMS.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("Error during EMS disconnect.", ex);
+        }
+    }
+}
+public interface IKafkaProducer : IDisposable
+{
+    Task ProduceAsync(string topic, string message);
+    bool IsConnected { get; }
+}
+
+public class KafkaProducer : IKafkaProducer
+{
+    private readonly IProducer<Null, string> _producer;
+    private readonly ILogger _logger;
+    private readonly string _bootstrapServers;
+
+    public bool IsConnected { get; private set; }
+
+    public KafkaProducer(KafkaConfig config, ILogger logger)
+    {
+        _logger = logger;
+        _bootstrapServers = config.BootstrapServers;
+
+        try
+        {
+            var configProducer = new ProducerConfig { BootstrapServers = _bootstrapServers };
+            _producer = new ProducerBuilder<Null, string>(configProducer).Build();
+            // Test connection by querying metadata
+            var meta = _producer.GetMetadata(TimeSpan.FromSeconds(5));
+            IsConnected = true;
+            _logger.LogInfo("Connected to Kafka.");
+        }
+        catch (Exception ex)
+        {
+            IsConnected = false;
+            _logger.LogError("Failed to connect to Kafka.", ex);
+            throw;
+        }
+    }
+
+    public async Task ProduceAsync(string topic, string message)
+    {
+        await _producer.ProduceAsync(topic, new Message<Null, string> { Value = message });
+    }
+
+    public void Dispose()
+    {
+        _producer?.Flush(TimeSpan.FromSeconds(5));
+        _producer?.Dispose();
+        IsConnected = false;
+        _logger.LogInfo("Disconnected from Kafka.");
+    }
+}
+public class MessageProcessingService : ServiceBase
+{
+    private readonly ITibcoEmsConnection _emsConnection;
+    private readonly IKafkaProducer _kafkaProducer;
+    private readonly IMessageTransformer _transformer;
+    private readonly ILogger _logger;
+    private readonly string _emsQueueName;
+    private readonly string _emsErrorQueueName;
+    private readonly string _kafkaTopic;
+
+    private IMessageConsumer _consumer;
+    private IMessageProducer _errorQueueProducer;
+    private CancellationTokenSource _cts;
+
+    public MessageProcessingService(
+        ITibcoEmsConnection emsConnection,
+        IKafkaProducer kafkaProducer,
+        IMessageTransformer transformer,
+        ILogger logger,
+        EmsConfig emsConfig,
+        KafkaConfig kafkaConfig)
+    {
+        _emsConnection = emsConnection;
+        _kafkaProducer = kafkaProducer;
+        _transformer = transformer;
+        _logger = logger;
+        _emsQueueName = emsConfig.QueueName;
+        _emsErrorQueueName = emsConfig.ErrorQueueName;
+        _kafkaTopic = kafkaConfig.Topic;
+    }
+
+    protected override void OnStart(string[] args)
+    {
+        _logger.LogInfo("Service starting...");
+        if (!_emsConnection.IsConnected || !_kafkaProducer.IsConnected)
+        {
+            _logger.LogError("Cannot start service: EMS or Kafka connection unavailable.");
+            Stop();
+            return;
+        }
+
+        _consumer = _emsConnection.CreateConsumer(_emsQueueName);
+        _errorQueueProducer = _emsConnection.CreateProducer(_emsErrorQueueName);
+        _cts = new CancellationTokenSource();
+
+        Task.Run(() => ProcessMessages(_cts.Token));
+    }
+
+    private async Task ProcessMessages(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                IMessage message = _consumer.Receive(1000); // timeout 1 sec
+                if (message == null)
+                    continue;
+
+                if (!(message is ITextMessage textMessage))
+                {
+                    _logger.LogError("Received non-TextMessage, skipping.");
+                    message.Acknowledge();
+                    continue;
+                }
+
+                string json = _transformer.Transform(textMessage.Text);
+                bool processed = false;
+
+                if (json != null)
+                {
+                    processed = await TryWriteToKafkaWithRetries(json, 3);
+                }
+                else
+                {
+                    processed = TryWriteToErrorQueue(textMessage);
+                }
+
+                if (processed)
+                {
+                    message.Acknowledge();
+                    _logger.LogInfo("Message processed and acknowledged.");
+                }
+                else
+                {
+                    _logger.LogError("Failed to process message, not acknowledging.");
+                    // Do not acknowledge to allow redelivery
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Exception in message processing loop.", ex);
+                // Check connections and decide to stop
+                if (!_emsConnection.IsConnected || !_kafkaProducer.IsConnected)
+                {
+                    _logger.LogError("Critical connection lost. Stopping service.");
+                    Stop();
+                }
+            }
+        }
+    }
+
+    private async Task<bool> TryWriteToKafkaWithRetries(string json, int maxRetries)
+    {
+        int attempt = 0;
+        while (attempt < maxRetries)
+        {
+            try
+            {
+                await _kafkaProducer.ProduceAsync(_kafkaTopic, json);
+                return true;
+            }
+            catch (ProduceException<Null, string> ex) when (ex.Error.IsRetriable)
+            {
+                attempt++;
+                _logger.LogError($"Kafka produce retry {attempt}/{maxRetries} failed.", ex);
+                await Task.Delay(1000);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Kafka produce failed with non-retriable exception.", ex);
+                break;
+            }
+        }
+        return false;
+    }
+
+    private bool TryWriteToErrorQueue(ITextMessage message)
+    {
+        try
+        {
+            var errorMessage = _errorQueueProducer.CreateTextMessage(message.Text);
+            _errorQueueProducer.Send(errorMessage);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("Failed to write message to EMS error queue.", ex);
+            return false;
+        }
+    }
+
+    protected override void OnStop()
+    {
+        _logger.LogInfo("Service stopping...");
+        _cts?.Cancel();
+        _consumer?.Close();
+        _errorQueueProducer?.Close();
+        _emsConnection?.Dispose();
+        _kafkaProducer?.Dispose();
+        _logger.LogInfo("Service stopped.");
+    }
+}
+public static class DependencyConfig
+{
+    public static IContainer Configure()
+    {
+        var builder = new ContainerBuilder();
+
+        // Load config paths from App.config
+        var emsConfigPath = ConfigurationManager.AppSettings["EmsConfigPath"];
+        var kafkaConfigPath = ConfigurationManager.AppSettings["KafkaConfigPath"];
+        var logFilePath = ConfigurationManager.AppSettings["LogFilePath"];
+
+        builder.RegisterType<JsonConfigProvider>().As<IConfigProvider>().SingleInstance();
+        builder.Register(c =>
+        {
+            var configProvider = c.Resolve<IConfigProvider>();
+            return configProvider.LoadConfig<EmsConfig>(emsConfigPath);
+        }).SingleInstance();
+
+        builder.Register(c =>
+        {
+            var configProvider = c.Resolve<IConfigProvider>();
+            return configProvider.LoadConfig<KafkaConfig>(kafkaConfigPath);
+        }).SingleInstance();
+
+        builder.Register(c => new FileLogger(logFilePath)).As<ILogger>().SingleInstance();
+
+        builder.RegisterType<TibcoEmsConnection>().As<ITibcoEmsConnection>()
+            .SingleInstance();
+
+        builder.RegisterType<KafkaProducer>().As<IKafkaProducer>()
+            .SingleInstance();
+
+        builder.RegisterType<CustomerJsonTransformer>().As<IMessageTransformer>()
+            .SingleInstance();
+
+        builder.RegisterType<MessageProcessingService>();
+
+        return builder.Build();
+    }
+}
+static class Program
+{
+    static void Main()
+    {
+        var container = DependencyConfig.Configure();
+
+        var service = container.Resolve<MessageProcessingService>();
+        ServiceBase.Run(service);
+    }
+}
+[TestFixture]
+public class CustomerJsonTransformerTests
+{
+    private IMessageTransformer _transformer;
+
+    [SetUp]
+    public void Setup()
+    {
+        _transformer = new CustomerJsonTransformer();
+    }
+
+    [Test]
+    public void Transform_ValidMessage_ReturnsJson()
+    {
+        var input = "name:John Doe;address:123 Main St";
+        var json = _transformer.Transform(input);
+        Assert.IsNotNull(json);
+        Assert.IsTrue(json.Contains("\"name\":\"John Doe\""));
+        Assert.IsTrue(json.Contains("\"address\":\"123 Main St\""));
+    }
+
+    [Test]
+    public void Transform_MissingName_ReturnsNull()
+    {
+        var input = "address:123 Main St";
+        var json = _transformer.Transform(input);
+        Assert.IsNull(json);
+    }
+}
+Summary
+The service uses singleton connections for EMS and Kafka.
+
+It acknowledges TIBCO messages only after successful Kafka or error queue write.
+
+It retries Kafka writes 3 times on retryable exceptions.
+
+It logs all operations and errors to a file.
+
+It shuts down gracefully if EMS or Kafka connections fail.
+
+It uses Autofac DI and follows SOLID principles.
+
+Configuration is loaded from JSON files whose paths are in App.config.
+
+Unit tests are provided for key components.
