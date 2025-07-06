@@ -1,0 +1,1696 @@
+<!-- App.config -->
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+    <appSettings>
+        <add key="EmsConfigPath" value="C:\Config\ems.json" />
+        <add key="KafkaConfigPath" value="C:\Config\kafka.json" />
+    </appSettings>
+    
+    <runtime>
+        <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">
+            <dependentAssembly>
+                <assemblyIdentity name="Newtonsoft.Json" publicKeyToken="30ad4fe6b2a6aeed" culture="neutral" />
+                <bindingRedirect oldVersion="0.0.0.0-13.0.0.0" newVersion="13.0.3.0" />
+            </dependentAssembly>
+        </assemblyBinding>
+    </runtime>
+    
+    <startup>
+        <supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8" />
+    </startup>
+</configuration>
+
+<!-- log4net.config -->
+<?xml version="1.0" encoding="utf-8" ?>
+<log4net>
+    <appender name="RollingFileAppender" type="log4net.Appender.RollingFileAppender">
+        <file value="C:\Logs\TibcoKafkaService.log" />
+        <appendToFile value="true" />
+        <rollingStyle value="Date" />
+        <datePattern value="yyyyMMdd" />
+        <maxSizeRollBackups value="10" />
+        <layout type="log4net.Layout.PatternLayout">
+            <conversionPattern value="%date [%thread] %-5level %logger{1} - %message%newline" />
+        </layout>
+    </appender>
+    
+    <appender name="ConsoleAppender" type="log4net.Appender.ConsoleAppender">
+        <layout type="log4net.Layout.PatternLayout">
+            <conversionPattern value="%date [%thread] %-5level %logger{1} - %message%newline" />
+        </layout>
+    </appender>
+    
+    <root>
+        <level value="INFO" />
+        <appender-ref ref="RollingFileAppender" />
+        <appender-ref ref="ConsoleAppender" />
+    </root>
+</log4net>
+
+
+// ems.json
+{
+  "serverUrl": "tcp://localhost:7222",
+  "username": "admin",
+  "password": "admin",
+  "queueName": "customer.queue",
+  "errorQueueName": "customer.error.queue",
+  "connectionTimeout": 30000,
+  "receiveTimeout": 10000
+}
+
+// kafka.json
+{
+  "bootstrapServers": "localhost:9092",
+  "topic": "customer-data",
+  "connectionTimeout": 30000,
+  "producerConfig": {
+    "acks": "all",
+    "retries": "3",
+    "batch.size": "16384",
+    "linger.ms": "1",
+    "buffer.memory": "33554432",
+    "compression.type": "snappy",
+    "enable.idempotence": "true"
+  }
+}
+
+
+<!-- TibcoKafkaService.csproj -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Autofac" Version="6.5.0" />
+    <PackageReference Include="Confluent.Kafka" Version="2.2.0" />
+    <PackageReference Include="log4net" Version="2.0.15" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="System.Configuration.ConfigurationManager" Version="6.0.1" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="6.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="TIBCO.EMS">
+      <HintPath>C:\tibco\ems\clients\dotnet\TIBCO.EMS.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="App.config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="log4net.config">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>
+
+<!-- TibcoKafkaService.Tests.csproj -->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.3.2" />
+    <PackageReference Include="Moq" Version="4.18.4" />
+    <PackageReference Include="NUnit" Version="3.13.3" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.2.1" />
+    <PackageReference Include="NUnit.Analyzers" Version="3.3.0" />
+    <PackageReference Include="coverlet.collector" Version="3.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TibcoKafkaService\TibcoKafkaService.csproj" />
+  </ItemGroup>
+
+</Project>
+
+<!-- Directory.Build.props -->
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsAsErrors />
+    <WarningsNotAsErrors>CS8618;CS8625</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>
+
+
+
+
+// ProjectInstaller.cs
+using System.ComponentModel;
+using System.Configuration.Install;
+using System.ServiceProcess;
+
+namespace TibcoKafkaService
+{
+    [RunInstaller(true)]
+    public partial class ProjectInstaller : Installer
+    {
+        private ServiceProcessInstaller serviceProcessInstaller;
+        private ServiceInstaller serviceInstaller;
+
+        public ProjectInstaller()
+        {
+            InitializeComponent();
+        }
+
+        private void InitializeComponent()
+        {
+            this.serviceProcessInstaller = new ServiceProcessInstaller();
+            this.serviceInstaller = new ServiceInstaller();
+
+            // Service Process Installer
+            this.serviceProcessInstaller.Account = ServiceAccount.LocalSystem;
+            this.serviceProcessInstaller.Username = null;
+            this.serviceProcessInstaller.Password = null;
+
+            // Service Installer
+            this.serviceInstaller.ServiceName = "TibcoKafkaService";
+            this.serviceInstaller.DisplayName = "TIBCO Kafka Message Service";
+            this.serviceInstaller.Description = "Service that reads messages from TIBCO EMS and forwards them to Kafka";
+            this.serviceInstaller.StartType = ServiceStartMode.Automatic;
+
+            // Add installers
+            this.Installers.AddRange(new Installer[] {
+                this.serviceProcessInstaller,
+                this.serviceInstaller
+            });
+        }
+    }
+}
+
+// AssemblyInfo.cs
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[assembly: AssemblyTitle("TibcoKafkaService")]
+[assembly: AssemblyDescription("Windows Service for TIBCO EMS to Kafka message forwarding")]
+[assembly: AssemblyConfiguration("")]
+[assembly: AssemblyCompany("")]
+[assembly: AssemblyProduct("TibcoKafkaService")]
+[assembly: AssemblyCopyright("Copyright © 2024")]
+[assembly: AssemblyTrademark("")]
+[assembly: AssemblyCulture("")]
+[assembly: ComVisible(false)]
+[assembly: Guid("12345678-1234-1234-1234-123456789012")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
+
+// Install.bat
+@echo off
+echo Installing TibcoKafkaService...
+%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe TibcoKafkaService.exe
+echo Service installed successfully!
+pause
+
+// Uninstall.bat
+@echo off
+echo Uninstalling TibcoKafkaService...
+%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\InstallUtil.exe /u TibcoKafkaService.exe
+echo Service uninstalled successfully!
+pause
+
+// README.md
+# TIBCO Kafka Service
+
+A Windows Service that continuously reads TextMessages from TIBCO EMS, transforms them into JSON format containing customer name and address, and forwards them to a Kafka topic.
+
+## Features
+
+- **Continuous Message Processing**: Reads messages from TIBCO EMS queue continuously
+- **JSON Transformation**: Converts text messages to JSON format with customer name and address
+- **Error Handling**: Messages without names are sent to error queue
+- **Kafka Integration**: Forwards valid messages to Kafka topic with retry logic
+- **Graceful Error Handling**: All errors are logged and handled appropriately
+- **SOLID Principles**: Clean architecture with dependency injection using Autofac
+- **Configurable**: EMS and Kafka settings loaded from JSON configuration files
+
+## Configuration
+
+### App.config
+Update the paths to your configuration files:
+```xml
+<add key="EmsConfigPath" value="C:\Config\ems.json" />
+<add key="KafkaConfigPath" value="C:\Config\kafka.json" />
+```
+
+### EMS Configuration (ems.json)
+```json
+{
+  "serverUrl": "tcp://localhost:7222",
+  "username": "admin",
+  "password": "admin",
+  "queueName": "customer.queue",
+  "errorQueueName": "customer.error.queue",
+  "connectionTimeout": 30000,
+  "receiveTimeout": 10000
+}
+```
+
+### Kafka Configuration (kafka.json)
+```json
+{
+  "bootstrapServers": "localhost:9092",
+  "topic": "customer-data",
+  "connectionTimeout": 30000,
+  "producerConfig": {
+    "acks": "all",
+    "retries": "3",
+    "enable.idempotence": "true"
+  }
+}
+```
+
+## Installation
+
+1. Build the project
+2. Copy configuration files to the specified paths
+3. Run `Install.bat` as Administrator to install the service
+4. Start the service from Services.msc or use `sc start TibcoKafkaService`
+
+## Message Format
+
+The service expects text messages with the following format:
+```
+name: John Doe
+address: 123 Main Street, City, State
+```
+
+Output JSON format:
+```json
+{
+  "name": "John Doe",
+  "address": "123 Main Street, City, State"
+}
+```
+
+## Error Handling
+
+- Messages without names are sent to the error queue
+- Connection failures result in service shutdown
+- Kafka retryable exceptions are retried up to 3 times
+- All errors are logged to the configured log file
+
+## Testing
+
+Run unit tests using:
+```
+dotnet test
+```
+
+## Requirements
+
+- .NET Framework 4.8
+- TIBCO EMS Client Libraries
+- Kafka cluster
+- Windows Service environment
+
+
+// Program.cs
+using System;
+using System.ServiceProcess;
+using Autofac;
+using log4net;
+using log4net.Config;
+using System.IO;
+using System.Reflection;
+
+namespace TibcoKafkaService
+{
+    static class Program
+    {
+        static void Main()
+        {
+            // Configure log4net
+            var logRepository = LogManager.GetRepository(Assembly.GetEntryAssembly());
+            XmlConfigurator.Configure(logRepository, new FileInfo("log4net.config"));
+
+            ServiceBase[] ServicesToRun;
+            ServicesToRun = new ServiceBase[]
+            {
+                new TibcoKafkaWindowsService()
+            };
+            ServiceBase.Run(ServicesToRun);
+        }
+    }
+}
+
+// TibcoKafkaWindowsService.cs
+using System;
+using System.ServiceProcess;
+using System.Threading;
+using System.Threading.Tasks;
+using Autofac;
+using log4net;
+
+namespace TibcoKafkaService
+{
+    public partial class TibcoKafkaWindowsService : ServiceBase
+    {
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(TibcoKafkaWindowsService));
+        private IContainer _container;
+        private IMessageProcessor _messageProcessor;
+        private CancellationTokenSource _cancellationTokenSource;
+        private Task _processingTask;
+
+        public TibcoKafkaWindowsService()
+        {
+            InitializeComponent();
+        }
+
+        protected override void OnStart(string[] args)
+        {
+            try
+            {
+                Logger.Info("Starting TibcoKafka Service");
+                
+                // Initialize dependency injection
+                _container = ContainerConfig.Configure();
+                _messageProcessor = _container.Resolve<IMessageProcessor>();
+                
+                // Start message processing
+                _cancellationTokenSource = new CancellationTokenSource();
+                _processingTask = Task.Run(() => _messageProcessor.StartAsync(_cancellationTokenSource.Token));
+                
+                Logger.Info("TibcoKafka Service started successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.Fatal("Failed to start TibcoKafka Service", ex);
+                throw;
+            }
+        }
+
+        protected override void OnStop()
+        {
+            try
+            {
+                Logger.Info("Stopping TibcoKafka Service");
+                
+                _cancellationTokenSource?.Cancel();
+                _processingTask?.Wait(TimeSpan.FromSeconds(30));
+                
+                _messageProcessor?.Dispose();
+                _container?.Dispose();
+                
+                Logger.Info("TibcoKafka Service stopped successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Error stopping TibcoKafka Service", ex);
+            }
+        }
+
+        private void InitializeComponent()
+        {
+            this.ServiceName = "TibcoKafkaService";
+        }
+    }
+}
+
+// ContainerConfig.cs
+using Autofac;
+using TibcoKafkaService.Configuration;
+using TibcoKafkaService.Services;
+using TibcoKafkaService.Interfaces;
+
+namespace TibcoKafkaService
+{
+    public static class ContainerConfig
+    {
+        public static IContainer Configure()
+        {
+            var builder = new ContainerBuilder();
+
+            // Register configuration
+            builder.RegisterType<ConfigurationManager>().As<IConfigurationManager>().SingleInstance();
+            
+            // Register services
+            builder.RegisterType<TibcoEmsService>().As<ITibcoEmsService>().SingleInstance();
+            builder.RegisterType<KafkaService>().As<IKafkaService>().SingleInstance();
+            builder.RegisterType<MessageTransformer>().As<IMessageTransformer>().SingleInstance();
+            builder.RegisterType<MessageProcessor>().As<IMessageProcessor>().SingleInstance();
+
+            return builder.Build();
+        }
+    }
+}
+
+// Interfaces/IMessageProcessor.cs
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace TibcoKafkaService.Interfaces
+{
+    public interface IMessageProcessor : IDisposable
+    {
+        Task StartAsync(CancellationToken cancellationToken);
+    }
+}
+
+// Services/MessageProcessor.cs
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using log4net;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models;
+
+namespace TibcoKafkaService.Services
+{
+    public class MessageProcessor : IMessageProcessor
+    {
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(MessageProcessor));
+        private readonly ITibcoEmsService _tibcoService;
+        private readonly IKafkaService _kafkaService;
+        private readonly IMessageTransformer _messageTransformer;
+        private volatile bool _isProcessing;
+
+        public MessageProcessor(ITibcoEmsService tibcoService, IKafkaService kafkaService, 
+            IMessageTransformer messageTransformer)
+        {
+            _tibcoService = tibcoService ?? throw new ArgumentNullException(nameof(tibcoService));
+            _kafkaService = kafkaService ?? throw new ArgumentNullException(nameof(kafkaService));
+            _messageTransformer = messageTransformer ?? throw new ArgumentNullException(nameof(messageTransformer));
+        }
+
+        public async Task StartAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                Logger.Info("Initializing message processor");
+                
+                // Initialize connections
+                await _tibcoService.InitializeAsync();
+                await _kafkaService.InitializeAsync();
+                
+                Logger.Info("Message processor initialized successfully");
+                
+                _isProcessing = true;
+                
+                while (!cancellationToken.IsCancellationRequested && _isProcessing)
+                {
+                    try
+                    {
+                        await ProcessMessageAsync(cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        Logger.Info("Message processing cancelled");
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Error("Error processing message", ex);
+                        await Task.Delay(1000, cancellationToken); // Brief delay before retry
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Fatal("Critical error in message processor", ex);
+                Environment.Exit(1); // Shutdown service on critical error
+            }
+        }
+
+        private async Task ProcessMessageAsync(CancellationToken cancellationToken)
+        {
+            TibcoMessage tibcoMessage = null;
+            
+            try
+            {
+                // Receive message from TIBCO EMS
+                tibcoMessage = await _tibcoService.ReceiveMessageAsync(cancellationToken);
+                
+                if (tibcoMessage == null)
+                {
+                    await Task.Delay(100, cancellationToken); // Brief delay if no message
+                    return;
+                }
+
+                Logger.Debug($"Received message: {tibcoMessage.MessageId}");
+
+                // Transform message
+                var transformResult = _messageTransformer.Transform(tibcoMessage.Content);
+                
+                if (!transformResult.IsValid)
+                {
+                    Logger.Warn($"Message validation failed: {transformResult.ErrorMessage}");
+                    await _tibcoService.SendToErrorQueueAsync(tibcoMessage.Content);
+                    await _tibcoService.AcknowledgeMessageAsync(tibcoMessage);
+                    return;
+                }
+
+                // Send to Kafka with retry logic
+                var kafkaSuccess = await SendToKafkaWithRetryAsync(transformResult.JsonMessage, cancellationToken);
+                
+                if (kafkaSuccess)
+                {
+                    await _tibcoService.AcknowledgeMessageAsync(tibcoMessage);
+                    Logger.Debug($"Message processed successfully: {tibcoMessage.MessageId}");
+                }
+                else
+                {
+                    Logger.Error($"Failed to send message to Kafka after retries: {tibcoMessage.MessageId}");
+                    // Don't acknowledge - let message be redelivered
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Error processing message: {tibcoMessage?.MessageId}", ex);
+                // Don't acknowledge on error - let message be redelivered
+            }
+        }
+
+        private async Task<bool> SendToKafkaWithRetryAsync(string jsonMessage, CancellationToken cancellationToken)
+        {
+            const int maxRetries = 3;
+            
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
+            {
+                try
+                {
+                    await _kafkaService.SendMessageAsync(jsonMessage, cancellationToken);
+                    return true;
+                }
+                catch (Exception ex) when (IsRetryableException(ex) && attempt < maxRetries)
+                {
+                    Logger.Warn($"Kafka send failed (attempt {attempt}/{maxRetries}), retrying...", ex);
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Kafka send failed (attempt {attempt}/{maxRetries})", ex);
+                    if (attempt == maxRetries)
+                        return false;
+                }
+            }
+            
+            return false;
+        }
+
+        private bool IsRetryableException(Exception ex)
+        {
+            // Add logic to determine if exception is retryable
+            // This depends on your Kafka client implementation
+            var exceptionType = ex.GetType().Name;
+            return exceptionType.Contains("Timeout") || 
+                   exceptionType.Contains("Network") || 
+                   exceptionType.Contains("Retriable");
+        }
+
+        public void Dispose()
+        {
+            _isProcessing = false;
+            _tibcoService?.Dispose();
+            _kafkaService?.Dispose();
+        }
+    }
+}
+
+
+// Models/TibcoMessage.cs
+using System;
+
+namespace TibcoKafkaService.Models
+{
+    public class TibcoMessage
+    {
+        public string MessageId { get; set; }
+        public string Content { get; set; }
+        public DateTime ReceivedAt { get; set; }
+        public object NativeMessage { get; set; } // For TIBCO EMS native message object
+    }
+}
+
+// Models/CustomerData.cs
+using Newtonsoft.Json;
+
+namespace TibcoKafkaService.Models
+{
+    public class CustomerData
+    {
+        [JsonProperty("name")]
+        public string Name { get; set; }
+        
+        [JsonProperty("address")]
+        public string Address { get; set; }
+    }
+}
+
+// Models/TransformationResult.cs
+namespace TibcoKafkaService.Models
+{
+    public class TransformationResult
+    {
+        public bool IsValid { get; set; }
+        public string JsonMessage { get; set; }
+        public string ErrorMessage { get; set; }
+        
+        public static TransformationResult Success(string jsonMessage)
+        {
+            return new TransformationResult
+            {
+                IsValid = true,
+                JsonMessage = jsonMessage
+            };
+        }
+        
+        public static TransformationResult Error(string errorMessage)
+        {
+            return new TransformationResult
+            {
+                IsValid = false,
+                ErrorMessage = errorMessage
+            };
+        }
+    }
+}
+
+// Models/Configuration/EmsConfiguration.cs
+using Newtonsoft.Json;
+
+namespace TibcoKafkaService.Models.Configuration
+{
+    public class EmsConfiguration
+    {
+        [JsonProperty("serverUrl")]
+        public string ServerUrl { get; set; }
+        
+        [JsonProperty("username")]
+        public string Username { get; set; }
+        
+        [JsonProperty("password")]
+        public string Password { get; set; }
+        
+        [JsonProperty("queueName")]
+        public string QueueName { get; set; }
+        
+        [JsonProperty("errorQueueName")]
+        public string ErrorQueueName { get; set; }
+        
+        [JsonProperty("connectionTimeout")]
+        public int ConnectionTimeout { get; set; } = 30000;
+        
+        [JsonProperty("receiveTimeout")]
+        public int ReceiveTimeout { get; set; } = 10000;
+    }
+}
+
+// Models/Configuration/KafkaConfiguration.cs
+using Newtonsoft.Json;
+using System.Collections.Generic;
+
+namespace TibcoKafkaService.Models.Configuration
+{
+    public class KafkaConfiguration
+    {
+        [JsonProperty("bootstrapServers")]
+        public string BootstrapServers { get; set; }
+        
+        [JsonProperty("topic")]
+        public string Topic { get; set; }
+        
+        [JsonProperty("producerConfig")]
+        public Dictionary<string, string> ProducerConfig { get; set; }
+        
+        [JsonProperty("connectionTimeout")]
+        public int ConnectionTimeout { get; set; } = 30000;
+    }
+}
+
+
+// Interfaces/IConfigurationManager.cs
+using TibcoKafkaService.Models.Configuration;
+
+namespace TibcoKafkaService.Interfaces
+{
+    public interface IConfigurationManager
+    {
+        EmsConfiguration GetEmsConfiguration();
+        KafkaConfiguration GetKafkaConfiguration();
+    }
+}
+
+// Configuration/ConfigurationManager.cs
+using System;
+using System.Configuration;
+using System.IO;
+using Newtonsoft.Json;
+using log4net;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models.Configuration;
+
+namespace TibcoKafkaService.Configuration
+{
+    public class ConfigurationManager : IConfigurationManager
+    {
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(ConfigurationManager));
+        private readonly EmsConfiguration _emsConfig;
+        private readonly KafkaConfiguration _kafkaConfig;
+
+        public ConfigurationManager()
+        {
+            try
+            {
+                _emsConfig = LoadEmsConfiguration();
+                _kafkaConfig = LoadKafkaConfiguration();
+            }
+            catch (Exception ex)
+            {
+                Logger.Fatal("Failed to load configuration", ex);
+                throw;
+            }
+        }
+
+        public EmsConfiguration GetEmsConfiguration()
+        {
+            return _emsConfig;
+        }
+
+        public KafkaConfiguration GetKafkaConfiguration()
+        {
+            return _kafkaConfig;
+        }
+
+        private EmsConfiguration LoadEmsConfiguration()
+        {
+            var configPath = ConfigurationManager.AppSettings["EmsConfigPath"];
+            if (string.IsNullOrEmpty(configPath))
+                throw new ConfigurationErrorsException("EmsConfigPath not found in app.config");
+
+            if (!File.Exists(configPath))
+                throw new FileNotFoundException($"EMS configuration file not found: {configPath}");
+
+            var json = File.ReadAllText(configPath);
+            var config = JsonConvert.DeserializeObject<EmsConfiguration>(json);
+            
+            ValidateEmsConfiguration(config);
+            Logger.Info($"EMS configuration loaded from: {configPath}");
+            
+            return config;
+        }
+
+        private KafkaConfiguration LoadKafkaConfiguration()
+        {
+            var configPath = ConfigurationManager.AppSettings["KafkaConfigPath"];
+            if (string.IsNullOrEmpty(configPath))
+                throw new ConfigurationErrorsException("KafkaConfigPath not found in app.config");
+
+            if (!File.Exists(configPath))
+                throw new FileNotFoundException($"Kafka configuration file not found: {configPath}");
+
+            var json = File.ReadAllText(configPath);
+            var config = JsonConvert.DeserializeObject<KafkaConfiguration>(json);
+            
+            ValidateKafkaConfiguration(config);
+            Logger.Info($"Kafka configuration loaded from: {configPath}");
+            
+            return config;
+        }
+
+        private void ValidateEmsConfiguration(EmsConfiguration config)
+        {
+            if (config == null)
+                throw new ConfigurationErrorsException("EMS configuration is null");
+            
+            if (string.IsNullOrEmpty(config.ServerUrl))
+                throw new ConfigurationErrorsException("EMS ServerUrl is required");
+            
+            if (string.IsNullOrEmpty(config.QueueName))
+                throw new ConfigurationErrorsException("EMS QueueName is required");
+            
+            if (string.IsNullOrEmpty(config.ErrorQueueName))
+                throw new ConfigurationErrorsException("EMS ErrorQueueName is required");
+        }
+
+        private void ValidateKafkaConfiguration(KafkaConfiguration config)
+        {
+            if (config == null)
+                throw new ConfigurationErrorsException("Kafka configuration is null");
+            
+            if (string.IsNullOrEmpty(config.BootstrapServers))
+                throw new ConfigurationErrorsException("Kafka BootstrapServers is required");
+            
+            if (string.IsNullOrEmpty(config.Topic))
+                throw new ConfigurationErrorsException("Kafka Topic is required");
+        }
+    }
+}
+
+
+// Interfaces/ITibcoEmsService.cs
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using TibcoKafkaService.Models;
+
+namespace TibcoKafkaService.Interfaces
+{
+    public interface ITibcoEmsService : IDisposable
+    {
+        Task InitializeAsync();
+        Task<TibcoMessage> ReceiveMessageAsync(CancellationToken cancellationToken);
+        Task SendToErrorQueueAsync(string message);
+        Task AcknowledgeMessageAsync(TibcoMessage message);
+    }
+}
+
+// Interfaces/IKafkaService.cs
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace TibcoKafkaService.Interfaces
+{
+    public interface IKafkaService : IDisposable
+    {
+        Task InitializeAsync();
+        Task SendMessageAsync(string jsonMessage, CancellationToken cancellationToken);
+    }
+}
+
+// Interfaces/IMessageTransformer.cs
+using TibcoKafkaService.Models;
+
+namespace TibcoKafkaService.Interfaces
+{
+    public interface IMessageTransformer
+    {
+        TransformationResult Transform(string textMessage);
+    }
+}
+
+
+// Services/TibcoEmsService.cs
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using log4net;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models;
+using TibcoKafkaService.Models.Configuration;
+using TIBCO.EMS;
+
+namespace TibcoKafkaService.Services
+{
+    public class TibcoEmsService : ITibcoEmsService
+    {
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(TibcoEmsService));
+        private readonly EmsConfiguration _config;
+        private Connection _connection;
+        private Session _session;
+        private MessageConsumer _consumer;
+        private MessageProducer _errorProducer;
+        private Queue _queue;
+        private Queue _errorQueue;
+        private volatile bool _isInitialized;
+
+        public TibcoEmsService(IConfigurationManager configManager)
+        {
+            _config = configManager?.GetEmsConfiguration() ?? 
+                     throw new ArgumentNullException(nameof(configManager));
+        }
+
+        public async Task InitializeAsync()
+        {
+            try
+            {
+                Logger.Info("Initializing TIBCO EMS connection");
+                
+                // Create connection factory
+                var factory = new ConnectionFactory(_config.ServerUrl);
+                
+                // Create connection
+                _connection = string.IsNullOrEmpty(_config.Username) 
+                    ? factory.CreateConnection() 
+                    : factory.CreateConnection(_config.Username, _config.Password);
+                
+                // Set connection timeout
+                _connection.ExceptionListener = OnConnectionException;
+                
+                // Create session
+                _session = _connection.CreateSession(false, Session.CLIENT_ACKNOWLEDGE);
+                
+                // Create queues
+                _queue = _session.CreateQueue(_config.QueueName);
+                _errorQueue = _session.CreateQueue(_config.ErrorQueueName);
+                
+                // Create consumer and producer
+                _consumer = _session.CreateConsumer(_queue);
+                _errorProducer = _session.CreateProducer(_errorQueue);
+                
+                // Start connection
+                _connection.Start();
+                
+                _isInitialized = true;
+                Logger.Info("TIBCO EMS connection initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.Fatal("Failed to initialize TIBCO EMS connection", ex);
+                throw;
+            }
+        }
+
+        public async Task<TibcoMessage> ReceiveMessageAsync(CancellationToken cancellationToken)
+        {
+            if (!_isInitialized)
+                throw new InvalidOperationException("TibcoEmsService not initialized");
+
+            try
+            {
+                // Use a short timeout to allow for cancellation checking
+                var message = _consumer.Receive(_config.ReceiveTimeout);
+                
+                if (message == null)
+                    return null;
+
+                if (message is TextMessage textMessage)
+                {
+                    return new TibcoMessage
+                    {
+                        MessageId = message.MessageID,
+                        Content = textMessage.Text,
+                        ReceivedAt = DateTime.UtcNow,
+                        NativeMessage = message
+                    };
+                }
+                else
+                {
+                    Logger.Warn($"Received non-text message: {message.GetType().Name}");
+                    // Acknowledge unsupported message types
+                    message.Acknowledge();
+                    return null;
+                }
+            }
+            catch (EMSException ex)
+            {
+                Logger.Error("Error receiving message from TIBCO EMS", ex);
+                throw;
+            }
+        }
+
+        public async Task SendToErrorQueueAsync(string message)
+        {
+            if (!_isInitialized)
+                throw new InvalidOperationException("TibcoEmsService not initialized");
+
+            try
+            {
+                var textMessage = _session.CreateTextMessage(message);
+                textMessage.SetLongProperty("ErrorTimestamp", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                
+                _errorProducer.Send(textMessage);
+                Logger.Debug("Message sent to error queue");
+            }
+            catch (EMSException ex)
+            {
+                Logger.Error("Error sending message to error queue", ex);
+                throw;
+            }
+        }
+
+        public async Task AcknowledgeMessageAsync(TibcoMessage message)
+        {
+            if (message?.NativeMessage is Message nativeMessage)
+            {
+                try
+                {
+                    nativeMessage.Acknowledge();
+                    Logger.Debug($"Message acknowledged: {message.MessageId}");
+                }
+                catch (EMSException ex)
+                {
+                    Logger.Error($"Error acknowledging message: {message.MessageId}", ex);
+                    throw;
+                }
+            }
+        }
+
+        private void OnConnectionException(Exception ex)
+        {
+            Logger.Error("TIBCO EMS connection exception", ex);
+            _isInitialized = false;
+            
+            // Trigger service shutdown on connection loss
+            Environment.Exit(1);
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                Logger.Info("Disposing TIBCO EMS resources");
+                
+                _consumer?.Close();
+                _errorProducer?.Close();
+                _session?.Close();
+                _connection?.Close();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Error disposing TIBCO EMS resources", ex);
+            }
+        }
+    }
+}
+
+
+// Services/KafkaService.cs
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Confluent.Kafka;
+using log4net;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models.Configuration;
+
+namespace TibcoKafkaService.Services
+{
+    public class KafkaService : IKafkaService
+    {
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(KafkaService));
+        private readonly KafkaConfiguration _config;
+        private IProducer<string, string> _producer;
+        private volatile bool _isInitialized;
+
+        public KafkaService(IConfigurationManager configManager)
+        {
+            _config = configManager?.GetKafkaConfiguration() ?? 
+                     throw new ArgumentNullException(nameof(configManager));
+        }
+
+        public async Task InitializeAsync()
+        {
+            try
+            {
+                Logger.Info("Initializing Kafka producer");
+                
+                var producerConfig = new ProducerConfig
+                {
+                    BootstrapServers = _config.BootstrapServers,
+                    MessageTimeoutMs = _config.ConnectionTimeout,
+                    EnableDeliveryReports = true,
+                    DeliveryReportFields = "all"
+                };
+
+                // Add custom configuration properties
+                if (_config.ProducerConfig != null)
+                {
+                    foreach (var kvp in _config.ProducerConfig)
+                    {
+                        producerConfig.Set(kvp.Key, kvp.Value);
+                    }
+                }
+
+                _producer = new ProducerBuilder<string, string>(producerConfig)
+                    .SetErrorHandler((_, e) =>
+                    {
+                        Logger.Error($"Kafka error: {e.Reason}", e.IsFatal ? new Exception(e.Reason) : null);
+                        if (e.IsFatal)
+                        {
+                            _isInitialized = false;
+                            Environment.Exit(1); // Shutdown service on fatal error
+                        }
+                    })
+                    .SetLogHandler((_, logMessage) =>
+                    {
+                        Logger.Debug($"Kafka log: {logMessage.Message}");
+                    })
+                    .Build();
+
+                // Test connection by getting metadata
+                var metadata = _producer.GetMetadata(_config.Topic, TimeSpan.FromSeconds(10));
+                if (metadata.Topics.Count == 0)
+                {
+                    throw new Exception($"Topic '{_config.Topic}' not found");
+                }
+
+                _isInitialized = true;
+                Logger.Info("Kafka producer initialized successfully");
+            }
+            catch (Exception ex)
+            {
+                Logger.Fatal("Failed to initialize Kafka producer", ex);
+                throw;
+            }
+        }
+
+        public async Task SendMessageAsync(string jsonMessage, CancellationToken cancellationToken)
+        {
+            if (!_isInitialized)
+                throw new InvalidOperationException("KafkaService not initialized");
+
+            try
+            {
+                var message = new Message<string, string>
+                {
+                    Key = Guid.NewGuid().ToString(),
+                    Value = jsonMessage,
+                    Timestamp = Timestamp.Default
+                };
+
+                var deliveryResult = await _producer.ProduceAsync(_config.Topic, message, cancellationToken);
+                
+                if (deliveryResult.Status == PersistenceStatus.Persisted)
+                {
+                    Logger.Debug($"Message sent to Kafka successfully. Partition: {deliveryResult.Partition}, Offset: {deliveryResult.Offset}");
+                }
+                else
+                {
+                    throw new Exception($"Message not persisted to Kafka. Status: {deliveryResult.Status}");
+                }
+            }
+            catch (ProduceException<string, string> ex)
+            {
+                Logger.Error($"Error sending message to Kafka: {ex.Error.Reason}", ex);
+                
+                // Determine if this is a retryable error
+                if (IsRetryableError(ex.Error))
+                {
+                    throw new RetryableKafkaException(ex.Error.Reason, ex);
+                }
+                
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                Logger.Warn("Kafka send operation was cancelled");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Unexpected error sending message to Kafka", ex);
+                throw;
+            }
+        }
+
+        private bool IsRetryableError(Error error)
+        {
+            return error.Code == ErrorCode.RequestTimedOut ||
+                   error.Code == ErrorCode.NetworkException ||
+                   error.Code == ErrorCode.NotEnoughReplicas ||
+                   error.Code == ErrorCode.NotEnoughReplicasAfterAppend ||
+                   error.Code == ErrorCode.BrokerNotAvailable ||
+                   error.Code == ErrorCode.LeaderNotAvailable;
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                Logger.Info("Disposing Kafka producer");
+                
+                _producer?.Flush(TimeSpan.FromSeconds(10));
+                _producer?.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Error disposing Kafka producer", ex);
+            }
+        }
+    }
+
+    // Custom exception for retryable Kafka errors
+    public class RetryableKafkaException : Exception
+    {
+        public RetryableKafkaException(string message) : base(message) { }
+        public RetryableKafkaException(string message, Exception innerException) : base(message, innerException) { }
+    }
+}
+
+
+// Services/MessageTransformer.cs
+using System;
+using System.Text.RegularExpressions;
+using log4net;
+using Newtonsoft.Json;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models;
+
+namespace TibcoKafkaService.Services
+{
+    public class MessageTransformer : IMessageTransformer
+    {
+        private static readonly ILog Logger = LogManager.GetLogger(typeof(MessageTransformer));
+        
+        // Regex patterns for extracting name and address from text message
+        private static readonly Regex NamePattern = new Regex(@"name\s*[:=]\s*([^\r\n,;]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex AddressPattern = new Regex(@"address\s*[:=]\s*([^\r\n,;]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        public TransformationResult Transform(string textMessage)
+        {
+            if (string.IsNullOrWhiteSpace(textMessage))
+            {
+                return TransformationResult.Error("Input message is null or empty");
+            }
+
+            try
+            {
+                Logger.Debug($"Transforming message: {textMessage.Substring(0, Math.Min(100, textMessage.Length))}...");
+
+                var customerData = ExtractCustomerData(textMessage);
+                
+                // Validate that name is present
+                if (string.IsNullOrWhiteSpace(customerData.Name))
+                {
+                    return TransformationResult.Error("Customer name is missing from the message");
+                }
+
+                // Convert to JSON
+                var jsonMessage = JsonConvert.SerializeObject(customerData, Formatting.None);
+                
+                Logger.Debug($"Message transformed successfully: {jsonMessage}");
+                return TransformationResult.Success(jsonMessage);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Error transforming message", ex);
+                return TransformationResult.Error($"Transformation failed: {ex.Message}");
+            }
+        }
+
+        private CustomerData ExtractCustomerData(string textMessage)
+        {
+            var customerData = new CustomerData();
+
+            // Extract name
+            var nameMatch = NamePattern.Match(textMessage);
+            if (nameMatch.Success)
+            {
+                customerData.Name = nameMatch.Groups[1].Value.Trim();
+            }
+
+            // Extract address
+            var addressMatch = AddressPattern.Match(textMessage);
+            if (addressMatch.Success)
+            {
+                customerData.Address = addressMatch.Groups[1].Value.Trim();
+            }
+
+            return customerData;
+        }
+    }
+}
+
+
+// Tests/MessageTransformerTests.cs
+using NUnit.Framework;
+using TibcoKafkaService.Services;
+using TibcoKafkaService.Models;
+using Newtonsoft.Json;
+
+namespace TibcoKafkaService.Tests
+{
+    [TestFixture]
+    public class MessageTransformerTests
+    {
+        private MessageTransformer _transformer;
+
+        [SetUp]
+        public void Setup()
+        {
+            _transformer = new MessageTransformer();
+        }
+
+        [Test]
+        public void Transform_ValidMessageWithNameAndAddress_ReturnsSuccessfulResult()
+        {
+            // Arrange
+            var textMessage = "name: John Doe, address: 123 Main St, City";
+
+            // Act
+            var result = _transformer.Transform(textMessage);
+
+            // Assert
+            Assert.IsTrue(result.IsValid);
+            Assert.IsNotNull(result.JsonMessage);
+            
+            var customerData = JsonConvert.DeserializeObject<CustomerData>(result.JsonMessage);
+            Assert.AreEqual("John Doe", customerData.Name);
+            Assert.AreEqual("123 Main St, City", customerData.Address);
+        }
+
+        [Test]
+        public void Transform_MessageWithNameOnly_ReturnsSuccessfulResult()
+        {
+            // Arrange
+            var textMessage = "name: Jane Smith";
+
+            // Act
+            var result = _transformer.Transform(textMessage);
+
+            // Assert
+            Assert.IsTrue(result.IsValid);
+            Assert.IsNotNull(result.JsonMessage);
+            
+            var customerData = JsonConvert.DeserializeObject<CustomerData>(result.JsonMessage);
+            Assert.AreEqual("Jane Smith", customerData.Name);
+            Assert.IsNull(customerData.Address);
+        }
+
+        [Test]
+        public void Transform_MessageWithoutName_ReturnsError()
+        {
+            // Arrange
+            var textMessage = "address: 456 Oak Ave";
+
+            // Act
+            var result = _transformer.Transform(textMessage);
+
+            // Assert
+            Assert.IsFalse(result.IsValid);
+            Assert.IsNotNull(result.ErrorMessage);
+            Assert.IsTrue(result.ErrorMessage.Contains("name is missing"));
+        }
+
+        [Test]
+        public void Transform_EmptyMessage_ReturnsError()
+        {
+            // Arrange
+            var textMessage = "";
+
+            // Act
+            var result = _transformer.Transform(textMessage);
+
+            // Assert
+            Assert.IsFalse(result.IsValid);
+            Assert.IsNotNull(result.ErrorMessage);
+        }
+
+        [Test]
+        public void Transform_NullMessage_ReturnsError()
+        {
+            // Arrange
+            string textMessage = null;
+
+            // Act
+            var result = _transformer.Transform(textMessage);
+
+            // Assert
+            Assert.IsFalse(result.IsValid);
+            Assert.IsNotNull(result.ErrorMessage);
+        }
+
+        [Test]
+        public void Transform_DifferentFormatting_ExtractsCorrectly()
+        {
+            // Arrange
+            var textMessage = "Name = Bob Wilson\nAddress = 789 Pine Street";
+
+            // Act
+            var result = _transformer.Transform(textMessage);
+
+            // Assert
+            Assert.IsTrue(result.IsValid);
+            
+            var customerData = JsonConvert.DeserializeObject<CustomerData>(result.JsonMessage);
+            Assert.AreEqual("Bob Wilson", customerData.Name);
+            Assert.AreEqual("789 Pine Street", customerData.Address);
+        }
+    }
+}
+
+// Tests/ConfigurationManagerTests.cs
+using NUnit.Framework;
+using System;
+using System.IO;
+using TibcoKafkaService.Configuration;
+using TibcoKafkaService.Models.Configuration;
+
+namespace TibcoKafkaService.Tests
+{
+    [TestFixture]
+    public class ConfigurationManagerTests
+    {
+        private string _tempEmsConfigPath;
+        private string _tempKafkaConfigPath;
+
+        [SetUp]
+        public void Setup()
+        {
+            _tempEmsConfigPath = Path.GetTempFileName();
+            _tempKafkaConfigPath = Path.GetTempFileName();
+            
+            // Create valid test configuration files
+            var emsConfig = new EmsConfiguration
+            {
+                ServerUrl = "tcp://localhost:7222",
+                Username = "admin",
+                Password = "admin",
+                QueueName = "test.queue",
+                ErrorQueueName = "test.error.queue",
+                ConnectionTimeout = 30000,
+                ReceiveTimeout = 10000
+            };
+            
+            var kafkaConfig = new KafkaConfiguration
+            {
+                BootstrapServers = "localhost:9092",
+                Topic = "test-topic",
+                ConnectionTimeout = 30000
+            };
+
+            File.WriteAllText(_tempEmsConfigPath, Newtonsoft.Json.JsonConvert.SerializeObject(emsConfig));
+            File.WriteAllText(_tempKafkaConfigPath, Newtonsoft.Json.JsonConvert.SerializeObject(kafkaConfig));
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            if (File.Exists(_tempEmsConfigPath))
+                File.Delete(_tempEmsConfigPath);
+            
+            if (File.Exists(_tempKafkaConfigPath))
+                File.Delete(_tempKafkaConfigPath);
+        }
+
+        [Test]
+        public void GetEmsConfiguration_ValidConfig_ReturnsConfiguration()
+        {
+            // Arrange
+            System.Configuration.ConfigurationManager.AppSettings["EmsConfigPath"] = _tempEmsConfigPath;
+            System.Configuration.ConfigurationManager.AppSettings["KafkaConfigPath"] = _tempKafkaConfigPath;
+            
+            var configManager = new ConfigurationManager();
+
+            // Act
+            var config = configManager.GetEmsConfiguration();
+
+            // Assert
+            Assert.IsNotNull(config);
+            Assert.AreEqual("tcp://localhost:7222", config.ServerUrl);
+            Assert.AreEqual("test.queue", config.QueueName);
+            Assert.AreEqual("test.error.queue", config.ErrorQueueName);
+        }
+
+        [Test]
+        public void GetKafkaConfiguration_ValidConfig_ReturnsConfiguration()
+        {
+            // Arrange
+            System.Configuration.ConfigurationManager.AppSettings["EmsConfigPath"] = _tempEmsConfigPath;
+            System.Configuration.ConfigurationManager.AppSettings["KafkaConfigPath"] = _tempKafkaConfigPath;
+            
+            var configManager = new ConfigurationManager();
+
+            // Act
+            var config = configManager.GetKafkaConfiguration();
+
+            // Assert
+            Assert.IsNotNull(config);
+            Assert.AreEqual("localhost:9092", config.BootstrapServers);
+            Assert.AreEqual("test-topic", config.Topic);
+        }
+    }
+}
+
+// Tests/MessageProcessorTests.cs
+using NUnit.Framework;
+using Moq;
+using System.Threading;
+using System.Threading.Tasks;
+using TibcoKafkaService.Services;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models;
+
+namespace TibcoKafkaService.Tests
+{
+    [TestFixture]
+    public class MessageProcessorTests
+    {
+        private Mock<ITibcoEmsService> _mockTibcoService;
+        private Mock<IKafkaService> _mockKafkaService;
+        private Mock<IMessageTransformer> _mockTransformer;
+        private MessageProcessor _processor;
+
+        [SetUp]
+        public void Setup()
+        {
+            _mockTibcoService = new Mock<ITibcoEmsService>();
+            _mockKafkaService = new Mock<IKafkaService>();
+            _mockTransformer = new Mock<IMessageTransformer>();
+            
+            _processor = new MessageProcessor(_mockTibcoService.Object, _mockKafkaService.Object, _mockTransformer.Object);
+        }
+
+        [Test]
+        public void Constructor_NullTibcoService_ThrowsArgumentNullException()
+        {
+            // Act & Assert
+            Assert.Throws<ArgumentNullException>(() => 
+                new MessageProcessor(null, _mockKafkaService.Object, _mockTransformer.Object));
+        }
+
+        [Test]
+        public void Constructor_NullKafkaService_ThrowsArgumentNullException()
+        {
+            // Act & Assert
+            Assert.Throws<ArgumentNullException>(() => 
+                new MessageProcessor(_mockTibcoService.Object, null, _mockTransformer.Object));
+        }
+
+        [Test]
+        public void Constructor_NullTransformer_ThrowsArgumentNullException()
+        {
+            // Act & Assert
+            Assert.Throws<ArgumentNullException>(() => 
+                new MessageProcessor(_mockTibcoService.Object, _mockKafkaService.Object, null));
+        }
+
+        [Test]
+        public async Task StartAsync_InitializesServices()
+        {
+            // Arrange
+            var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel(); // Cancel immediately to stop processing
+
+            // Act
+            await _processor.StartAsync(cancellationTokenSource.Token);
+
+            // Assert
+            _mockTibcoService.Verify(x => x.InitializeAsync(), Times.Once);
+            _mockKafkaService.Verify(x => x.InitializeAsync(), Times.Once);
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            _processor?.Dispose();
+        }
+    }
+}
+
+// Tests/TibcoEmsServiceTests.cs
+using NUnit.Framework;
+using Moq;
+using TibcoKafkaService.Services;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models.Configuration;
+using System;
+
+namespace TibcoKafkaService.Tests
+{
+    [TestFixture]
+    public class TibcoEmsServiceTests
+    {
+        private Mock<IConfigurationManager> _mockConfigManager;
+        private EmsConfiguration _testConfig;
+        private TibcoEmsService _service;
+
+        [SetUp]
+        public void Setup()
+        {
+            _mockConfigManager = new Mock<IConfigurationManager>();
+            _testConfig = new EmsConfiguration
+            {
+                ServerUrl = "tcp://localhost:7222",
+                Username = "admin",
+                Password = "admin",
+                QueueName = "test.queue",
+                ErrorQueueName = "test.error.queue",
+                ConnectionTimeout = 30000,
+                ReceiveTimeout = 10000
+            };
+            
+            _mockConfigManager.Setup(x => x.GetEmsConfiguration()).Returns(_testConfig);
+            _service = new TibcoEmsService(_mockConfigManager.Object);
+        }
+
+        [Test]
+        public void Constructor_NullConfigManager_ThrowsArgumentNullException()
+        {
+            // Act & Assert
+            Assert.Throws<ArgumentNullException>(() => new TibcoEmsService(null));
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            _service?.Dispose();
+        }
+    }
+}
+
+// Tests/KafkaServiceTests.cs
+using NUnit.Framework;
+using Moq;
+using TibcoKafkaService.Services;
+using TibcoKafkaService.Interfaces;
+using TibcoKafkaService.Models.Configuration;
+using System;
+
+namespace TibcoKafkaService.Tests
+{
+    [TestFixture]
+    public class KafkaServiceTests
+    {
+        private Mock<IConfigurationManager> _mockConfigManager;
+        private KafkaConfiguration _testConfig;
+        private KafkaService _service;
+
+        [SetUp]
+        public void Setup()
+        {
+            _mockConfigManager = new Mock<IConfigurationManager>();
+            _testConfig = new KafkaConfiguration
+            {
+                BootstrapServers = "localhost:9092",
+                Topic = "test-topic",
+                ConnectionTimeout = 30000
+            };
+            
+            _mockConfigManager.Setup(x => x.GetKafkaConfiguration()).Returns(_testConfig);
+            _service = new KafkaService(_mockConfigManager.Object);
+        }
+
+        [Test]
+        public void Constructor_NullConfigManager_ThrowsArgumentNullException()
+        {
+            // Act & Assert
+            Assert.Throws<ArgumentNullException>(() => new KafkaService(null));
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            _service?.Dispose();
+        }
+    }
+}
