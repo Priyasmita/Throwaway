@@ -1,1 +1,13 @@
+"transforms": "AddTimestampHeader",
+"transforms.AddTimestampHeader.type": "org.apache.kafka.connect.transforms.ScriptedTransform$Value",
+"transforms.AddTimestampHeader.language": "javascript",
+"transforms.AddTimestampHeader.script": "function apply(record) { var timestamp = record.after != null ? record.after['YourDateTimeField'] : null; if (timestamp != null) { record.headers().add('timestap', timestamp.toString()); } return record; }"
+
+
+{
+  "transforms": "AddUpdatedAtHeader",
+  "transforms.AddUpdatedAtHeader.type": "org.apache.kafka.connect.transforms.ScriptedTransform$Value",
+  "transforms.AddUpdatedAtHeader.script": "if (value && value.after && value.after.UpdatedAt) headers.set('timestamp', value.after.UpdatedAt); value;",
+  "transforms.AddUpdatedAtHeader.language": "javascript"
+}
 
