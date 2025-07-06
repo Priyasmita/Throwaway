@@ -37,3 +37,53 @@ TibcoKafkaWindowsService
 ├── KafkaService (Kafka operations)
 ├── MessageTransformer (Text to JSON conversion)
 └── ConfigurationManager (Configuration loading)
+
+Key Features Implemented:
+1. SOLID Principles & Dependency Injection
+
+Single Responsibility: Each class has a single, well-defined purpose
+Open/Closed: Services are open for extension through interfaces
+Liskov Substitution: All implementations can be substituted through interfaces
+Interface Segregation: Focused interfaces for each service
+Dependency Inversion: High-level modules depend on abstractions
+Autofac: Used for dependency injection container configuration
+
+2. Configuration Management
+
+JSON Configuration Files: Separate files for EMS and Kafka settings
+App.config: Contains paths to configuration files
+Validation: Configuration validation on startup
+Type-safe: Strong-typed configuration classes
+
+3. TIBCO EMS Integration
+
+Continuous Reading: Reads TextMessages from specified queue
+Error Queue: Messages without names sent to error queue
+Acknowledgment: Messages acknowledged only after successful processing
+Connection Monitoring: Service shuts down on connection loss
+
+4. Kafka Integration
+
+Producer Implementation: Sends JSON messages to Kafka topic
+Retry Logic: Three retries for retryable exceptions
+Connection Validation: Service shuts down if Kafka unavailable
+Delivery Confirmation: Ensures messages are persisted
+
+5. Message Transformation
+
+Text to JSON: Converts text messages to JSON format
+Customer Data: Extracts name and address using regex patterns
+Validation: Ensures name is present before processing
+
+6. Error Handling & Logging
+
+Graceful Error Handling: All exceptions caught and logged
+Log4net: Comprehensive logging with file and console appenders
+No Mid-Operation Shutdown: Service continues processing other messages
+Connection Failure Handling: Service shuts down on critical connection issues
+
+7. Testing
+
+NUnit Test Cases: Comprehensive unit tests for all classes
+Mocking: Uses Moq for dependency mocking
+Coverage: Tests cover success scenarios, error conditions, and edge cases
